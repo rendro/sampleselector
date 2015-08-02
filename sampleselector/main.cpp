@@ -32,15 +32,16 @@ static const double MIN_DISTANCE = 5.0;
 // number of sets to create
 static const int ITERATIONS = 1000;
 // min set size for exporting
-static const int MIN_SET_SIZE = 72;
+static const int MIN_SET_SIZE = 64;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
 static const bool WRITE_FILES = true;
 
 // datapoint with id (line number or generic id), latitude, longitude and a buffer zone
 struct datapoint {
     int id;
-    double lat;
+    string name;
     double lng;
+    double lat;
     set<datapoint> buffer;
 };
 
@@ -59,10 +60,10 @@ inline bool operator == (const datapoint& lhs, const datapoint& rhs) {
 double haversine(const datapoint& start, const datapoint& end) {
     static const double EARTH_RADIUS = 6371.0;
     static const double DEG2RAD = M_PI / 180;
-    double dlon = DEG2RAD * (end.lng - start.lng);
+    double dlng = DEG2RAD * (end.lng - start.lng);
     double dlat = DEG2RAD * (end.lat - start.lat);
-    double a = pow(sin(dlat/2), 2) + cos(DEG2RAD * start.lat) * cos(DEG2RAD * start.lat) * pow(sin(dlon/2), 2);
-    double b = 2 * asin(sqrt(a));
+    double a = pow(sin(dlat/2), 2) + cos(DEG2RAD * start.lat) * cos(DEG2RAD * end.lat) * pow(sin(dlng/2), 2);
+    double b = 2 * atan2(sqrt(a), sqrt(1 - a));
     return EARTH_RADIUS * b;
 }
 
@@ -90,8 +91,9 @@ dataset csvToDataset(string file) {
         
         datapoint datapoint = {
             stoi( record[0] ),
-            stod( record[1] ),
+            record[1],
             stod( record[2] ),
+            stod( record[3] ),
             buffer
         };
         
@@ -170,6 +172,7 @@ int main(int argc, const char * argv[]) {
             if (buffer.size() > 0) {
                 datapoint k = {
                     i->id,
+                    i->name,
                     i->lat,
                     i->lng,
                     buffer
@@ -234,7 +237,7 @@ int main(int argc, const char * argv[]) {
                 // set precision to max to output coordinates as exact as possible
                 outfile << setprecision(numeric_limits<double>::digits10);
                 // write csv row
-                outfile << j->id << "," << j->lat << "," << j->lng << endl;
+                outfile << j->id << "," << j->name << "," << j->lat << "," << j->lng << endl;
             }
             
             outfile.close();
