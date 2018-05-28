@@ -28,14 +28,13 @@ static const string SOURCE_FILE = "/Users/rendro/Downloads/data.csv";
 static const string DEST_FOLDER = "/Users/rendro/Downloads/result";
 
 // min distance for buffer zone
-// 5, 4, 3, 2
-static const double MIN_DISTANCE = 0.3;
+static const double MIN_DISTANCE = 0.15;
 // number of sets to create
 static const int ITERATIONS = 1e4;
 // min set size for exporting
-static const int MIN_SET_SIZE = 220;
+static const int MIN_SET_SIZE = 67;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
-static const bool WRITE_FILES = true;
+static const bool WRITE_FILES = false;
 
 // datapoint with id (line number or generic id), latitude, longitude and a buffer zone
 struct datapoint {
@@ -43,11 +42,11 @@ struct datapoint {
     string name;
     double lat;
     double lng;
-    set<datapoint> buffer;
+    set<int> buffer_ids;
 };
 
 // define dataset as a set of datapoints
-typedef set<datapoint> dataset;
+typedef map<int, datapoint> dataset;
 
 inline bool operator < (const datapoint& lhs, const datapoint& rhs) {
     return lhs.id < rhs.id;
@@ -66,6 +65,18 @@ double haversine(const datapoint& start, const datapoint& end) {
     double a = pow(sin(dlat/2), 2) + cos(DEG2RAD * start.lat) * cos(DEG2RAD * end.lat) * pow(sin(dlng/2), 2);
     double b = 2 * atan2(sqrt(a), sqrt(1 - a));
     return EARTH_RADIUS * b;
+}
+
+set<int> getBufferIDsForDatapoint(dataset::iterator &item, dataset data) {
+    set<int> buffer_ids;
+    for (auto it : data) {
+        if (item->first != it.first) {
+            if (haversine(item->second, it.second) <= MIN_DISTANCE) {
+                buffer_ids.insert(it.first);
+            }
+        }
+    }
+    return buffer_ids;
 }
 
 // read in a csv (columns [0, 1, 2, 3] match [id, name, lat, lng] of a datapoint
@@ -88,20 +99,24 @@ dataset csvToDataset(string file) {
             record.push_back( s );
         }
         
-        dataset buffer;
-        
+        set<int> buffer_ids;
+        int id = stoi( record[0] );
         datapoint datapoint = {
-            stoi( record[0] ),
+            id,
             record[1],
             stod( record[2] ),
             stod( record[3] ),
-            buffer
+            buffer_ids
         };
         
-        data.insert( datapoint );
+        data.insert({id, datapoint});
     }
     if ( !infile.eof() ) {
         cerr << "NO EOF!" << endl;
+    }
+    
+    for (auto it = data.begin(); it != data.end(); ++it) {
+        it->second.buffer_ids = getBufferIDsForDatapoint(it, data);
     }
     
     return data;
@@ -110,161 +125,118 @@ dataset csvToDataset(string file) {
 // generate a result set from two sets of datapoints of which the first set contains all
 // datapoints with other datapoints in the buffer zone and the of which the second set
 // contains all datapoints without other datapoints in the buffer zone
-dataset generateSet(dataset& withNearbyDataset, dataset& standaloneDataset) {
+set<int> generateSet(set<int> &standalonePoints, set<int> &withNearbyPoints, dataset &datapoints) {
     random_device rd;
     mt19937 rng(rd());
-    
-    dataset remainingDataset(withNearbyDataset.begin(), withNearbyDataset.end());
-    dataset resultSet(standaloneDataset.begin(), standaloneDataset.end());
-    
-    while (remainingDataset.size() != 0) {
-        // create iterator
-        dataset::iterator it = remainingDataset.begin();
-        
+    // create copies
+    set<int> remainingPoints(withNearbyPoints.begin(), withNearbyPoints.end());
+    set<int> result(standalonePoints.begin(), standalonePoints.end());
+
+    while (remainingPoints.size() != 0) {
+        auto it = remainingPoints.begin();
         // generate random index
-        uniform_int_distribution<int> uni(0, (int)remainingDataset.size());
+        uniform_int_distribution<int> uni(0, (int)remainingPoints.size());
         int r = uni(rng);
         // pick random datapoint by advancing the iterator to the random position
-        advance(it, r % remainingDataset.size());
-        
-        
+        advance(it, r % remainingPoints.size());
         // add picked datapoint to result list
-        resultSet.insert(*it);
-        
+        result.insert(*it);
         // remove all datapoints within buffer zone if still in remaining dataset
-        for (dataset::iterator j = it->buffer.begin(); j != it->buffer.end(); ++j) {
-            dataset::iterator tmp = remainingDataset.find(*j);
-            if (tmp != remainingDataset.end()) {
-                remainingDataset.erase(tmp);
+        set<int> buffer_ids = datapoints.at(*it).buffer_ids;
+        for (auto j : buffer_ids) {
+            auto tmp = remainingPoints.find(j);
+            if (tmp != remainingPoints.end()) {
+                remainingPoints.erase(tmp);
             }
         }
-        
         // remove picked datapoint from remaining list
-        remainingDataset.erase(remainingDataset.find(*it));
+        remainingPoints.erase(remainingPoints.find(*it));
     }
-    
-    return resultSet;
+    return result;
 }
 
 // main sampleselector
 int main(int argc, const char * argv[]) {
-    
-    dataset withNearbyDataset;
-    dataset standaloneDataset;
     // read in data
-    dataset allDatapoints = csvToDataset(SOURCE_FILE);
-    {
-        // iterate over all datapoints and add nearby points to the buffer zone
-        dataset::iterator i;
-        for (i = allDatapoints.begin(); i != allDatapoints.end(); ++i) {
-            dataset::iterator j;
-            dataset buffer;
-            for (j = allDatapoints.begin(); j != allDatapoints.end(); ++j) {
-                if (i != j) {
-                    double dist = haversine(*i, *j);
-                    if (dist < MIN_DISTANCE) {
-                        buffer.insert(*j);
-                    }
-                }
-            }
-            
-            if (buffer.size() > 0) {
-                datapoint k = {
-                    i->id,
-                    i->name,
-                    i->lat,
-                    i->lng,
-                    buffer
-                };
-                withNearbyDataset.insert(k);
-            } else {
-                standaloneDataset.insert(*i);
-            }
-        }
+    dataset datapoints = csvToDataset(SOURCE_FILE);
+    set<int> standalonePoints;
+    set<int> withNearbyPoints;
+    
+    for (auto it : datapoints) {
+        it.second.buffer_ids.size() == 0
+            ? standalonePoints.insert(it.first)
+            : withNearbyPoints.insert(it.first);
     }
-    
-    cout << "# Datapoints with datapoints in buffer zone   : " << withNearbyDataset.size() << endl;
-    cout << "# Datapoints with no datapoint in buffer zone : " << standaloneDataset.size() << endl;
+
+    cout << "# Datapoints with datapoints in buffer zone   : " << withNearbyPoints.size() << endl;
+    cout << "# Datapoints with no datapoint in buffer zone : " << standalonePoints.size() << endl;
     cout << endl;
-    
+
     // create result sets
-    set<dataset> results;
+    set<set<int>> results;
     int i = 0;
     double biggestSet = 0;
     while (i < ITERATIONS) {
         i++;
-        dataset resultSet = generateSet(withNearbyDataset, standaloneDataset);
-        
+        set<int> resultSet = generateSet(standalonePoints, withNearbyPoints, datapoints);
+
         if (i % 1000 == 0) {
             cout << "Iteration #" << to_string(i) << endl;
         }
-        
+
         if (resultSet.size() >= MIN_SET_SIZE) {
             results.insert(resultSet);
-            cout << "Iteration #" << to_string(i) << " => " << resultSet.size() << " datapoints" << endl;
+//            cout << "Iteration #" << to_string(i) << " => " << resultSet.size() << " datapoints" << endl;
         }
         biggestSet = biggestSet > resultSet.size() ? biggestSet : resultSet.size();
     }
-    
+
     cout << endl;
     cout << "Unique result sets found: " << results.size() << endl;
     cout << "Biggest result set found: " << biggestSet << endl;
     
-    // subset with all result sets that have a minimum length of MIN_SET_SIZE
-    set<dataset> resultsSubset;
-    copy_if(results.begin(), results.end(), inserter(resultsSubset, resultsSubset.begin()), [](const dataset & resultSet){
-        return resultSet.size() >= MIN_SET_SIZE;
-    });
-    
-    cout << "Found " << resultsSubset.size() << " sets with " << MIN_SET_SIZE << " or more datapoints" << endl;
-    
     if (WRITE_FILES) {
+        cout << "Writing files..." << endl;
         int filenr = 0;
-        
         map<unsigned long, int> setsPerLength;
-        
-        for (set<dataset>::iterator i = resultsSubset.begin(); i != resultsSubset.end(); ++i) {
-            
+        for (auto i : results) {
             char path [256];
-            sprintf(path, "%s/%lu", DEST_FOLDER.c_str(), i->size());
+            sprintf(path, "%s/%lu", DEST_FOLDER.c_str(), i.size());
             mkdir(path, 0775);
-            
-            if (setsPerLength[i->size()]) {
-                setsPerLength[i->size()] += 1;
-            } else {
-                setsPerLength[i->size()] = 1;
-            }
-            
-            ofstream outfile(string(path) + "/" + to_string(setsPerLength[i->size()]) + "-" + to_string(filenr++) + ".csv");
-            
-            for (dataset::iterator j = i->begin(); j != i->end(); ++j) {
-                // set precision to max to output coordinates as exact as possible
-                outfile << setprecision(numeric_limits<double>::digits10);
+
+            setsPerLength[i.size()]
+                ? setsPerLength[i.size()] += 1
+                : setsPerLength[i.size()] = 1;
+
+            ofstream outfile(string(path) + "/" + to_string(setsPerLength[i.size()]) + "-" + to_string(filenr++) + ".csv");
+            // set precision to max to output coordinates as exact as possible
+            outfile << setprecision(numeric_limits<double>::digits10);
+            for (auto j : i) {
+                datapoint point = datapoints.at(j);
                 // write csv row
-                outfile << j->id << "," << j->name << "," << j->lat << "," << j->lng << endl;
+                outfile << point.id << "," << point.name << "," << point.lat << "," << point.lng << endl;
             }
-            
             outfile.close();
         }
-        
+
         // write info file
         ofstream outfile(DEST_FOLDER + "/info.txt");
         outfile << "INFO" << endl;
         outfile << "---" << endl;
-        outfile << "Num of datapoints: " << allDatapoints.size() << endl;
+        outfile << "Num of datapoints: " << datapoints.size() << endl;
         outfile << "Min Distance (m): " << MIN_DISTANCE * 1000 << endl;
         outfile << "Iterations: " << ITERATIONS << endl;
         outfile << "Unique sets found: " << results.size() << endl;
         outfile << "Biggest set found: " << biggestSet << endl;
-        outfile << "Found " << resultsSubset.size() << " sets with " << MIN_SET_SIZE << " or more datapoints:" << endl;
-        
+        outfile << "Found " << results.size() << " sets with " << MIN_SET_SIZE << " or more datapoints:" << endl;
+
         for (auto kv : setsPerLength) {
-            outfile << "    " << kv.first << " -> " << kv.second << " times" << endl;
+            outfile << "  " << kv.first << " -> " << kv.second << " times" << endl;
         }
-        
+
         outfile.close();
     }
     
-    cout << "DONE!";
+    cout << "DONE!" << endl;
     return 0;
 }
