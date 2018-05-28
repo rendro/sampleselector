@@ -24,13 +24,16 @@
 using namespace std;
 
 // source and destination paths
+static const string PRESELECTED_FILE = "/Users/rendro/Downloads/preselected.csv";
 static const string SOURCE_FILE = "/Users/rendro/Downloads/data.csv";
 static const string DEST_FOLDER = "/Users/rendro/Downloads/result";
 
+// use preselected set
+static const bool WITH_PRESELECTION = false;
 // min distance for buffer zone
 static const double MIN_DISTANCE = 0.15;
 // number of sets to create
-static const int ITERATIONS = 1e6;
+static const int ITERATIONS = 1e4;
 // min set size for exporting
 static const int MIN_SET_SIZE = 67;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
@@ -81,7 +84,7 @@ keyset getBufferIDsForDatapoint(dataset::iterator &item, dataset data) {
 }
 
 // read in a csv (columns [0, 1, 2, 3] match [id, name, lat, lng] of a datapoint
-dataset csvToDataset(string file) {
+dataset csvToDataset(string file, bool create_buffer = true) {
     dataset data;
     
     ifstream infile( file );
@@ -116,8 +119,10 @@ dataset csvToDataset(string file) {
         cerr << "NO EOF!" << endl;
     }
     
-    for (auto it = data.begin(); it != data.end(); ++it) {
-        it->second.buffer_ids = getBufferIDsForDatapoint(it, data);
+    if (create_buffer) {
+        for (auto it = data.begin(); it != data.end(); ++it) {
+            it->second.buffer_ids = getBufferIDsForDatapoint(it, data);
+        }
     }
     
     return data;
@@ -159,19 +164,54 @@ keyset generateSet(keyset &standalonePoints, keyset &withNearbyPoints, dataset &
 // main sampleselector
 int main(int argc, const char * argv[]) {
     // read in data
-    dataset datapoints = csvToDataset(SOURCE_FILE);
+    dataset preselectedPoints;
+    dataset datapoints;
     keyset standalonePoints;
     keyset withNearbyPoints;
-    
-    for (auto it : datapoints) {
-        it.second.buffer_ids.size() == 0
-            ? standalonePoints.insert(it.first)
-            : withNearbyPoints.insert(it.first);
+
+    if (WITH_PRESELECTION) {
+        preselectedPoints = csvToDataset(PRESELECTED_FILE, false);
+        dataset points = csvToDataset(SOURCE_FILE);
+        dataset selectedPoints;
+        // only use datapoints that are not in buffer zone of preselected set points
+        for (auto point : points) {
+            bool use_point = true;
+            for (auto preselectedPoint : preselectedPoints) {
+                if (haversine(point.second, preselectedPoint.second) < MIN_DISTANCE) {
+                    use_point = false;
+                }
+            }
+            if (use_point) {
+                point.second.buffer_ids.size() == 0
+                    ? standalonePoints.insert(point.first)
+                    : withNearbyPoints.insert(point.first);
+            }
+        }
+        datapoints.insert(points.begin(), points.end());
+        datapoints.insert(preselectedPoints.begin(), preselectedPoints.end());
+        
+        cout << "With preselected sets" << endl;
+        cout << "Number of preselected points: " << preselectedPoints.size() << endl;
+        cout << "Number of points in source: " << points.size() << endl;
+        cout << "Number of points after filter: " << datapoints.size() << endl;
+        cout << endl;
+    } else {
+        datapoints = csvToDataset(SOURCE_FILE);
+        for (auto it : datapoints) {
+            it.second.buffer_ids.size() == 0
+                ? standalonePoints.insert(it.first)
+                : withNearbyPoints.insert(it.first);
+        }
     }
 
     cout << "# Datapoints with datapoints in buffer zone   : " << withNearbyPoints.size() << endl;
     cout << "# Datapoints with no datapoint in buffer zone : " << standalonePoints.size() << endl;
     cout << endl;
+    
+    keyset preselectedKeySet;
+    for (auto point : preselectedPoints) {
+        preselectedKeySet.insert(point.first);
+    }
 
     // create result sets
     set<keyset> results;
@@ -180,6 +220,9 @@ int main(int argc, const char * argv[]) {
     while (i < ITERATIONS) {
         i++;
         keyset resultSet = generateSet(standalonePoints, withNearbyPoints, datapoints);
+        if (WITH_PRESELECTION) {
+            resultSet.insert(preselectedKeySet.begin(), preselectedKeySet.end());
+        }
 
         if (i % 1000 == 0) {
             cout << "Iteration #" << to_string(i) << endl;
@@ -223,7 +266,14 @@ int main(int argc, const char * argv[]) {
         ofstream outfile(DEST_FOLDER + "/info.txt");
         outfile << "INFO" << endl;
         outfile << "---" << endl;
-        outfile << "Num of datapoints: " << datapoints.size() << endl;
+        if (WITH_PRESELECTION) {
+            outfile << "Num of preselected points: " << preselectedKeySet.size() << endl;
+            outfile << "Num of datapoints total: " << datapoints.size() << endl;
+        } else {
+            outfile << "Num of datapoints: " << datapoints.size() << endl;
+        }
+        outfile << "  Datapoints with points in buffer: " << withNearbyPoints.size() << endl;
+        outfile << "  Datapoints with empty buffer: " << standalonePoints.size() << endl;
         outfile << "Min Distance (m): " << MIN_DISTANCE * 1000 << endl;
         outfile << "Iterations: " << ITERATIONS << endl;
         outfile << "Unique sets found: " << results.size() << endl;
