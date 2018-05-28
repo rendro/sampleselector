@@ -25,14 +25,15 @@ using namespace std;
 
 // source and destination paths
 static const string SOURCE_FILE = "/Users/rendro/Downloads/data.csv";
-static const string DEST_FOLDER = "/Users/rendro/Desktop/result";
+static const string DEST_FOLDER = "/Users/rendro/Downloads/result";
 
 // min distance for buffer zone
-static const double MIN_DISTANCE = 5.0;
+// 5, 4, 3, 2
+static const double MIN_DISTANCE = 0.3;
 // number of sets to create
-static const int ITERATIONS = 1000;
+static const int ITERATIONS = 1e4;
 // min set size for exporting
-static const int MIN_SET_SIZE = 64;
+static const int MIN_SET_SIZE = 220;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
 static const bool WRITE_FILES = true;
 
@@ -40,8 +41,8 @@ static const bool WRITE_FILES = true;
 struct datapoint {
     int id;
     string name;
-    double lng;
     double lat;
+    double lng;
     set<datapoint> buffer;
 };
 
@@ -67,7 +68,7 @@ double haversine(const datapoint& start, const datapoint& end) {
     return EARTH_RADIUS * b;
 }
 
-// read in a csv (columns [0, 1, 2] match [id, lat, lng] of a datapoint
+// read in a csv (columns [0, 1, 2, 3] match [id, name, lat, lng] of a datapoint
 dataset csvToDataset(string file) {
     dataset data;
     
@@ -150,11 +151,9 @@ int main(int argc, const char * argv[]) {
     
     dataset withNearbyDataset;
     dataset standaloneDataset;
-    
+    // read in data
+    dataset allDatapoints = csvToDataset(SOURCE_FILE);
     {
-        // read in data
-        dataset allDatapoints = csvToDataset(SOURCE_FILE);
-        
         // iterate over all datapoints and add nearby points to the buffer zone
         dataset::iterator i;
         for (i = allDatapoints.begin(); i != allDatapoints.end(); ++i) {
@@ -196,10 +195,15 @@ int main(int argc, const char * argv[]) {
         i++;
         dataset resultSet = generateSet(withNearbyDataset, standaloneDataset);
         
-        results.insert(resultSet);
-        biggestSet = biggestSet > resultSet.size() ? biggestSet : resultSet.size();
+        if (i % 1000 == 0) {
+            cout << "Iteration #" << to_string(i) << endl;
+        }
         
-        cout << "Iteration #" << to_string(i) << " => " << resultSet.size() << " datapoints" << endl;
+        if (resultSet.size() >= MIN_SET_SIZE) {
+            results.insert(resultSet);
+            cout << "Iteration #" << to_string(i) << " => " << resultSet.size() << " datapoints" << endl;
+        }
+        biggestSet = biggestSet > resultSet.size() ? biggestSet : resultSet.size();
     }
     
     cout << endl;
@@ -246,7 +250,9 @@ int main(int argc, const char * argv[]) {
         // write info file
         ofstream outfile(DEST_FOLDER + "/info.txt");
         outfile << "INFO" << endl;
-        outfile << "---" << endl << endl;
+        outfile << "---" << endl;
+        outfile << "Num of datapoints: " << allDatapoints.size() << endl;
+        outfile << "Min Distance (m): " << MIN_DISTANCE * 1000 << endl;
         outfile << "Iterations: " << ITERATIONS << endl;
         outfile << "Unique sets found: " << results.size() << endl;
         outfile << "Biggest set found: " << biggestSet << endl;
