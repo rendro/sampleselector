@@ -30,23 +30,24 @@ static const string DEST_FOLDER = "/Users/rendro/Downloads/result";
 // min distance for buffer zone
 static const double MIN_DISTANCE = 0.15;
 // number of sets to create
-static const int ITERATIONS = 1e4;
+static const int ITERATIONS = 1e6;
 // min set size for exporting
 static const int MIN_SET_SIZE = 67;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
 static const bool WRITE_FILES = false;
 
+// set of unique identifiers for points
+typedef set<string> keyset;
 // datapoint with id (line number or generic id), latitude, longitude and a buffer zone
 struct datapoint {
     int id;
     string name;
     double lat;
     double lng;
-    set<int> buffer_ids;
+    keyset buffer_ids;
 };
-
 // define dataset as a set of datapoints
-typedef map<int, datapoint> dataset;
+typedef map<string, datapoint> dataset;
 
 inline bool operator < (const datapoint& lhs, const datapoint& rhs) {
     return lhs.id < rhs.id;
@@ -67,8 +68,8 @@ double haversine(const datapoint& start, const datapoint& end) {
     return EARTH_RADIUS * b;
 }
 
-set<int> getBufferIDsForDatapoint(dataset::iterator &item, dataset data) {
-    set<int> buffer_ids;
+keyset getBufferIDsForDatapoint(dataset::iterator &item, dataset data) {
+    keyset buffer_ids;
     for (auto it : data) {
         if (item->first != it.first) {
             if (haversine(item->second, it.second) <= MIN_DISTANCE) {
@@ -99,17 +100,17 @@ dataset csvToDataset(string file) {
             record.push_back( s );
         }
         
-        set<int> buffer_ids;
-        int id = stoi( record[0] );
+        keyset buffer_ids;
+        string key = record[1];
         datapoint datapoint = {
-            id,
-            record[1],
+            stoi( record[0] ),
+            key,
             stod( record[2] ),
             stod( record[3] ),
             buffer_ids
         };
         
-        data.insert({id, datapoint});
+        data.insert({key, datapoint});
     }
     if ( !infile.eof() ) {
         cerr << "NO EOF!" << endl;
@@ -125,12 +126,12 @@ dataset csvToDataset(string file) {
 // generate a result set from two sets of datapoints of which the first set contains all
 // datapoints with other datapoints in the buffer zone and the of which the second set
 // contains all datapoints without other datapoints in the buffer zone
-set<int> generateSet(set<int> &standalonePoints, set<int> &withNearbyPoints, dataset &datapoints) {
+keyset generateSet(keyset &standalonePoints, keyset &withNearbyPoints, dataset &datapoints) {
     random_device rd;
     mt19937 rng(rd());
     // create copies
-    set<int> remainingPoints(withNearbyPoints.begin(), withNearbyPoints.end());
-    set<int> result(standalonePoints.begin(), standalonePoints.end());
+    keyset remainingPoints(withNearbyPoints.begin(), withNearbyPoints.end());
+    keyset result(standalonePoints.begin(), standalonePoints.end());
 
     while (remainingPoints.size() != 0) {
         auto it = remainingPoints.begin();
@@ -142,7 +143,7 @@ set<int> generateSet(set<int> &standalonePoints, set<int> &withNearbyPoints, dat
         // add picked datapoint to result list
         result.insert(*it);
         // remove all datapoints within buffer zone if still in remaining dataset
-        set<int> buffer_ids = datapoints.at(*it).buffer_ids;
+        keyset buffer_ids = datapoints.at(*it).buffer_ids;
         for (auto j : buffer_ids) {
             auto tmp = remainingPoints.find(j);
             if (tmp != remainingPoints.end()) {
@@ -159,8 +160,8 @@ set<int> generateSet(set<int> &standalonePoints, set<int> &withNearbyPoints, dat
 int main(int argc, const char * argv[]) {
     // read in data
     dataset datapoints = csvToDataset(SOURCE_FILE);
-    set<int> standalonePoints;
-    set<int> withNearbyPoints;
+    keyset standalonePoints;
+    keyset withNearbyPoints;
     
     for (auto it : datapoints) {
         it.second.buffer_ids.size() == 0
@@ -173,12 +174,12 @@ int main(int argc, const char * argv[]) {
     cout << endl;
 
     // create result sets
-    set<set<int>> results;
+    set<keyset> results;
     int i = 0;
     double biggestSet = 0;
     while (i < ITERATIONS) {
         i++;
-        set<int> resultSet = generateSet(standalonePoints, withNearbyPoints, datapoints);
+        keyset resultSet = generateSet(standalonePoints, withNearbyPoints, datapoints);
 
         if (i % 1000 == 0) {
             cout << "Iteration #" << to_string(i) << endl;
@@ -186,7 +187,6 @@ int main(int argc, const char * argv[]) {
 
         if (resultSet.size() >= MIN_SET_SIZE) {
             results.insert(resultSet);
-//            cout << "Iteration #" << to_string(i) << " => " << resultSet.size() << " datapoints" << endl;
         }
         biggestSet = biggestSet > resultSet.size() ? biggestSet : resultSet.size();
     }
