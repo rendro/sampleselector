@@ -20,6 +20,9 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <thread>
+#include <chrono>
+#include <mutex>
 
 using namespace std;
 
@@ -28,16 +31,18 @@ static const string PRESELECTED_FILE = "/Users/rendro/Downloads/preselected.csv"
 static const string SOURCE_FILE = "/Users/rendro/Downloads/data.csv";
 static const string DEST_FOLDER = "/Users/rendro/Downloads/result";
 
+#define NUM_THREADS 8 
+
 // use preselected set
-static const bool WITH_PRESELECTION = false;
+static const bool WITH_PRESELECTION = true;
 // min distance for buffer zone
 static const double MIN_DISTANCE = 0.15;
 // number of sets to create
-static const int ITERATIONS = 1e4;
+static const int ITERATIONS = 1e3;
 // min set size for exporting
-static const int MIN_SET_SIZE = 67;
+static const int MIN_SET_SIZE = 63;
 // write result csv files for all found sets that have at least MIN_SET_SIZE datapoints
-static const bool WRITE_FILES = false;
+static const bool WRITE_FILES = true;
 
 // set of unique identifiers for points
 typedef set<string> keyset;
@@ -161,8 +166,61 @@ keyset generateSet(keyset &standalonePoints, keyset &withNearbyPoints, dataset &
     return result;
 }
 
+struct thread_data {
+    set<keyset> &resultSets;
+    mutex &resultsMutex;
+    keyset &standalonePoints;
+    keyset &withNearbyPoints;
+    dataset &datapoints;
+    keyset &preselectedKeySet;
+    int iterations;
+};
+
+void *genAndAddSet(void *threadarg) {
+    stringstream ss;
+    ss << this_thread::get_id();
+    string thread_id = ss.str();
+    struct thread_data *data;
+    data = (struct thread_data *) threadarg;
+    int i = 0;
+
+    char buffer[100];
+    sprintf(buffer, "Start thread(%s) with %d iterations\n", thread_id.c_str(), data->iterations);
+    cout << buffer;
+    memset(buffer, 0, sizeof(buffer));
+
+    while (i < data->iterations) {
+        i++;
+        keyset set = generateSet(data->standalonePoints, data->withNearbyPoints, data->datapoints);
+        if (WITH_PRESELECTION) {
+            set.insert(data->preselectedKeySet.begin(), data->preselectedKeySet.end());
+        }
+        if (set.size() >= MIN_SET_SIZE) {
+            lock_guard<mutex> guard(data->resultsMutex);
+            data->resultSets.insert(set);
+        }
+        if (i % 1000 == 0) {
+            sprintf(
+                buffer,
+                "Thread(%s) – Iteration %d – %.2f%%\n",
+                thread_id.c_str(),
+                i,
+                static_cast<float>(i) / static_cast<float>(data->iterations) * 100.0
+            );
+            cout << buffer;
+            memset(buffer, 0, sizeof(buffer));
+        }
+    }
+
+    sprintf(buffer, "Terminate thread(%s) after %d iterations\n", thread_id.c_str(), i);
+    cout << buffer;
+    memset(buffer, 0, sizeof(buffer));
+    return 0;
+}
+
 // main sampleselector
 int main(int argc, const char * argv[]) {
+    auto time_start = chrono::steady_clock::now();
     // read in data
     dataset preselectedPoints;
     dataset datapoints;
@@ -173,6 +231,11 @@ int main(int argc, const char * argv[]) {
         preselectedPoints = csvToDataset(PRESELECTED_FILE, false);
         dataset points = csvToDataset(SOURCE_FILE);
         dataset selectedPoints;
+
+        cout << "With preselected sets" << endl;
+        cout << "Number of preselected points: " << preselectedPoints.size() << endl;
+        cout << "Number of points in source: " << points.size() << endl;
+
         // only use datapoints that are not in buffer zone of preselected set points
         for (auto point : points) {
             bool use_point = true;
@@ -182,17 +245,17 @@ int main(int argc, const char * argv[]) {
                 }
             }
             if (use_point) {
+                cout << "Use point: " << point.first << endl;
                 point.second.buffer_ids.size() == 0
                     ? standalonePoints.insert(point.first)
                     : withNearbyPoints.insert(point.first);
+            } else {
+                cout << "Drop point: " << point.first << endl;
             }
         }
         datapoints.insert(points.begin(), points.end());
         datapoints.insert(preselectedPoints.begin(), preselectedPoints.end());
         
-        cout << "With preselected sets" << endl;
-        cout << "Number of preselected points: " << preselectedPoints.size() << endl;
-        cout << "Number of points in source: " << points.size() << endl;
         cout << "Number of points after filter: " << datapoints.size() << endl;
         cout << endl;
     } else {
@@ -213,31 +276,37 @@ int main(int argc, const char * argv[]) {
         preselectedKeySet.insert(point.first);
     }
 
-    // create result sets
+    thread *threads[NUM_THREADS];
+    mutex resultsMutex;
     set<keyset> results;
-    int i = 0;
+    thread_data td = {
+        results,
+        resultsMutex,
+        standalonePoints,
+        withNearbyPoints,
+        datapoints,
+        preselectedKeySet,
+        ITERATIONS / NUM_THREADS,
+    };
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        threads[i] = new thread(&genAndAddSet, &td);
+    }
+
+    // join threads
+    for (auto t : threads) {
+        t->join();
+    }
+
     double biggestSet = 0;
-    while (i < ITERATIONS) {
-        i++;
-        keyset resultSet = generateSet(standalonePoints, withNearbyPoints, datapoints);
-        if (WITH_PRESELECTION) {
-            resultSet.insert(preselectedKeySet.begin(), preselectedKeySet.end());
-        }
-
-        if (i % 1000 == 0) {
-            cout << "Iteration #" << to_string(i) << endl;
-        }
-
-        if (resultSet.size() >= MIN_SET_SIZE) {
-            results.insert(resultSet);
-        }
-        biggestSet = biggestSet > resultSet.size() ? biggestSet : resultSet.size();
+    for (auto &set : results) {
+        biggestSet = biggestSet > set.size() ? biggestSet : set.size();
     }
 
     cout << endl;
     cout << "Unique result sets found: " << results.size() << endl;
     cout << "Biggest result set found: " << biggestSet << endl;
-    
+
     if (WRITE_FILES) {
         cout << "Writing files..." << endl;
         int filenr = 0;
@@ -286,7 +355,9 @@ int main(int argc, const char * argv[]) {
 
         outfile.close();
     }
-    
+
     cout << "DONE!" << endl;
+    auto time_end = chrono::steady_clock::now();
+    cout << "Elapsed time in sec: " << chrono::duration_cast<chrono::seconds>(time_end - time_start).count() << endl;
     return 0;
 }
